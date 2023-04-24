@@ -1,0 +1,227 @@
+using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.IO;
+using System.Linq;
+using System.Net;
+using System.Net.Http;
+using System.Net.Http.Headers;
+using System.Text;
+using System.Text.RegularExpressions;
+using System.Threading.Tasks;
+
+namespace ConsoleApp1
+{
+    class Program
+    {
+        static void Main(string[] args)
+        {
+            string url = "http://archive.kernel.org/centos-vault/3.5/os/x86_64/";
+            string destinationFolder = @"C:\testdown";
+
+            DownloadFolder(url, destinationFolder);
+            Console.ReadKey();
+        }
+
+        static void DownloadFolder(string url, string destinationFolder)
+        {
+            HttpClient client = new HttpClient();
+            HttpResponseMessage response = client.GetAsync(url).Result;
+            response.EnsureSuccessStatusCode();
+
+            string pageContents = response.Content.ReadAsStringAsync().Result;
+
+          
+                // Create the directory if it doesn't exist
+                if (!Directory.Exists(destinationFolder))
+                {
+                    Directory.CreateDirectory(destinationFolder);
+                }
+
+                // Load progress from file
+                string progressFilePath = Path.Combine(destinationFolder, "progress.txt");
+                long lastByteDownloaded = 0;
+                if (File.Exists(progressFilePath))
+                {
+                    string lastByteDownloadedString = File.ReadAllText(progressFilePath);
+                    long.TryParse(lastByteDownloadedString, out lastByteDownloaded);
+                }
+
+                // Find all the links on the page
+                
+                List<String> links = LinkFinder.Find(pageContents);
+                foreach (string line in links)
+                {
+                        // If the link is a folder, download it recursively
+                        if (line.EndsWith("/"))
+                        {
+                            string folderName = line.Substring(0, line.Length - 1);
+                            string newUrl = url + folderName + "/";
+                            string newDestinationFolder = Path.Combine(destinationFolder, folderName);
+                            DownloadFolder(newUrl, newDestinationFolder);
+                        }
+                        // If the link is a file, download it
+                        else
+                        {
+                            string fileName = Path.GetFileName(line);
+                            string filePath = Path.Combine(destinationFolder, fileName);
+                            long fileSize = 0;
+                            try
+                            {
+                                fileSize = GetFileSize(client, url + fileName);
+                            }
+                            catch (Exception ex)
+                            {
+                                // Handle download errors and skip to next file
+                                Console.WriteLine("Error downloading {0}: {1}", fileName, ex.Message);
+                                continue;
+                            }
+
+                            // If the file has already been partially downloaded, resume from the last byte downloaded
+                            if (File.Exists(filePath))
+                            {
+                                FileInfo fileInfo = new FileInfo(filePath);
+                                if (fileInfo.Length >= fileSize)
+                                {
+                                    // The file has already been fully downloaded
+                                    Console.WriteLine("Skipping {0} (already downloaded)", fileName);
+                                    continue;
+                                }
+                                else
+                                {
+                                    // The file has been partially downloaded
+                                    lastByteDownloaded = fileInfo.Length;
+                                    Console.WriteLine("Resuming download of {0} from byte {1}", fileName, lastByteDownloaded);
+                                }
+                            }
+
+                            // Download the file
+                            DownloadFile(client,url + fileName, filePath, lastByteDownloaded);
+                            lastByteDownloaded = fileSize;
+
+                            // Write progress to file
+                            File.WriteAllText(progressFilePath, lastByteDownloaded.ToString());
+
+                           
+                        }
+                    
+                }
+
+                // Delete progress file after finishing the download of this folder
+                if (File.Exists(progressFilePath))
+                {
+                    File.Delete(progressFilePath);
+                }
+            
+        }
+
+        static void DownloadFile(HttpClient client, string url, string filePath, long start = 0, long? length = null)
+        {
+            string fileName = Path.GetFileName(url);
+          
+
+            HttpRequestMessage request = new HttpRequestMessage(HttpMethod.Get, url);
+            if (length.HasValue)
+            {
+                request.Headers.Range = new RangeHeaderValue(start, start + length.Value - 1);
+            }
+            else
+            {
+                request.Headers.Range = new RangeHeaderValue(start, null);
+            }
+
+            using (HttpResponseMessage response = client.SendAsync(request).Result)
+            {
+                response.EnsureSuccessStatusCode();
+                using (Stream contentStream = response.Content.ReadAsStreamAsync().Result,
+                    fileStream = new FileStream(filePath, FileMode.Create, FileAccess.Write, FileShare.None))
+                {
+                    byte[] buffer = new byte[8192];
+                    int bytesRead;
+                    while ((bytesRead = contentStream.Read(buffer, 0, buffer.Length)) > 0)
+                    {
+                        fileStream.Write(buffer, 0, bytesRead);
+                    }
+                }
+            }
+
+            Console.WriteLine($"Downloaded file: {fileName} (start: {start}, length: {length})");
+        }
+
+
+        static long GetFileSize(HttpClient client, string url)
+        {
+            HttpRequestMessage request = new HttpRequestMessage(HttpMethod.Head, url);
+            HttpResponseMessage response = client.SendAsync(request).Result;
+            response.EnsureSuccessStatusCode();
+            IEnumerable<string> contentLengthHeaders;
+            long contentLength = 0;
+            if (response.Headers.TryGetValues("Content-Length", out contentLengthHeaders))
+            {
+                string contentLengthString = contentLengthHeaders.First();
+                long.TryParse(contentLengthString, out contentLength);
+            }
+            return contentLength;
+        }
+
+
+    }
+}
+
+
+
+
+---------------------
+
+
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+using System.Text.RegularExpressions;
+using System.Threading.Tasks;
+
+namespace ConsoleApp1
+{
+    
+    static class LinkFinder
+    {
+        public static List<String> Find(string file)
+        {
+            List<string> list = new List<string>();
+            // 1.
+            // Find all matches in file.
+            MatchCollection m1 = Regex.Matches(file, @"(<a.*?>.*?</a>)", RegexOptions.Singleline);
+            string i = string.Empty;
+            // 2.
+            // Loop over each match.
+            foreach (Match m in m1)
+            {
+                string value = m.Groups[1].Value;
+               
+
+                // 3.
+                // Get href attribute.
+                Match m2 = Regex.Match(value, @"href=\""(.*?)\""", RegexOptions.Singleline);
+                if (m2.Success)
+                {
+                    i = m2.Groups[1].Value;
+                }
+
+                // 4.
+                // Remove inner tags from text.
+                string t = Regex.Replace(value, @"\s*<.*?>\s*", "", RegexOptions.Singleline);
+             //   i.Text = t;
+
+                if(! i.Contains(".."))
+                {
+                    list.Add(i);
+
+                }
+                
+            }
+            return list;
+        }
+    }
+    
+}
