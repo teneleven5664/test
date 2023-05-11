@@ -19,7 +19,7 @@ namespace ConsoleApp1
         {
             string url = "http://archive.kernel.org/centos-vault/3.5/os/x86_64/";
             string destinationFolder = @"C:\testdown";
-
+//
             DownloadFolder(url, destinationFolder);
             Console.ReadKey();
         }
